@@ -15,44 +15,58 @@ run_dir=/stek/lconcina/SLAM-LLM-DVC-/SLAM-LLM
 cd $run_dir
 code_dir=examples/asr_librispeech
 
-speech_encoder_path=/stek/lconcina/SLAM-LLM-DVC-/models/WavLM-Large.pt
-llm_path=/stek/lconcina/SLAM-LLM-DVC-/models/vicuna-7b-v1.5
-train_data_path=/stek/lconcina/SLAM-LLM-DVC-/data/speech_massive_data/slamllm_json_data/speech_massive_fr-FR_train_test.jsonl
-val_data_path=/stek/lconcina/SLAM-LLM-DVC-/data/speech_massive_data/slamllm_json_data/speech_massive_fr-FR_dev_test.jsonl
+speech_encoder_path=$1
+llm_path=$2
+train_data_path=$3
+val_data_path=$4
 
 exp_data=speechMassive
-learn_rate=1e-4
+learn_rate=$5
 
-output_dir=/stek/lconcina/SLAM-LLM/output/vicuna-7b-v1.5-$exp_data-linear-steplrwarmupkeep$learn_rate-wavlm-large-$(date +"%Y%m%d")
+#config data coming from params.yaml
+llm_name=$6
+llm_dim=$7
+encoder_name=$8
+encoder_projector_ds_rate=$9
+encoder_dim=${10}
+encoder_projector=${11}
 
+
+num_epochs=${13}
+#echo "num_epochs: ${12}"
+warmup_steps=${13}
+total_steps=${14}
+batch_size_training=${15}
+val_batch_size=${16}
+output_dir=${17}
 
 hydra_args="
 hydra.run.dir=$output_dir \
-++model_config.llm_name=vicuna-7b-v1.5 \
+++model_config.llm_name=$llm_name \
 ++model_config.llm_path=$llm_path \
-++model_config.llm_dim=4096 \
-++model_config.encoder_name=wavlm \
+++model_config.llm_dim=$llm_dim \
+++model_config.encoder_name=$encoder_name \
 ++model_config.normalize=true \
 ++dataset_config.normalize=true \
-++model_config.encoder_projector_ds_rate=5 \
+++model_config.encoder_projector_ds_rate=$encoder_projector_ds_rate \
 ++model_config.encoder_path=$speech_encoder_path \
-++model_config.encoder_dim=1024 \
-++model_config.encoder_projector=linear \
+++model_config.encoder_dim=$encoder_dim \
+++model_config.encoder_projector=$encoder_projector \
 ++dataset_config.dataset=speech_dataset \
 ++dataset_config.train_data_path=$train_data_path \
 ++dataset_config.val_data_path=$val_data_path \
 ++dataset_config.input_type=raw \
 ++train_config.model_name=asr \
-++train_config.num_epochs=3 \
+++train_config.num_epochs=$num_epochs \
 ++train_config.freeze_encoder=true \
 ++train_config.freeze_llm=true \
 ++train_config.batching_strategy=custom \
-++train_config.warmup_steps=10 \
-++train_config.total_steps=1000 \
+++train_config.warmup_steps=$warmup_steps \
+++train_config.total_steps=$total_steps \
 ++train_config.lr=1e-4 \
-++train_config.validation_interval=100 \
-++train_config.batch_size_training=2 \
-++train_config.val_batch_size=2 \
+++train_config.validation_interval=1000 \
+++train_config.batch_size_training=$batch_size_training \
+++train_config.val_batch_size=$val_batch_size \
 ++train_config.num_workers_dataloader=2 \
 ++train_config.output_dir=$output_dir \
 ++metric=acc \
