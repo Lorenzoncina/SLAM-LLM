@@ -15,7 +15,9 @@ llm_path=$2
 
 #output_dir=/root/tmp/vicuna-7b-v1.5-librispeech-linear-steplrwarmupkeep1e-4-wavlm-large-20240426
 output_dir=$3
-ckpt_path=$output_dir/asr_epoch_4_step_4729  #TODO find a way to expose this parameter
+#ckpt_path=$output_dir/asr_epoch_4_step_3729  #TODO find a way to expose this parameter
+ckpt_path=$output_dir/${13}
+
 #split=librispeech_test_clean
 split=$4
 #val_data_path=/nfs/maziyang.mzy/data/librispeech/${split}.jsonl
