@@ -32,7 +32,7 @@ encoder_dim=${10}
 encoder_projector=${11}
 
 
-num_epochs=${13}
+num_epochs=${12}
 #echo "num_epochs: ${12}"
 warmup_steps=${13}
 total_steps=${14}
