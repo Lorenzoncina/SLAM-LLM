@@ -1,4 +1,5 @@
 dataset_config:
     # we put prompt here, because the hydra override in shell script only support a small subset of chars
     # prompt: "Transcribe speech to text. Output the transcription directly without redundant content. Ensure that the output is not duplicated. "
-    prompt: "Transcribe speech to text. "
+    #prompt: "Transcribe speech to text. "
+    prompt: "First, transcribe the speech into text; Then predict the user intent; Finally annotate the utterance. This is an example: Transcript: allumez les lumières dans la cuisine. Intent class: iot. Annotated utterance: allumez les lumières dans la [place_name : cuisine] "
