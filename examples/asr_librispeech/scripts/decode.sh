@@ -10,6 +10,7 @@ code_dir=examples/asr_librispeech
 
 #speech_encoder_path=/nfs/maziyang.mzy/models/wavlm/WavLM-Large.pt
 speech_encoder_path=$1
+echo "Speech Encoder Path set to: $speech_encoder_path"
 #llm_path=/nfs/maziyang.mzy/models/vicuna-7b-v1.5
 llm_path=$2
 
@@ -32,6 +33,7 @@ encoder_projector=${10}
 num_epochs=${11}
 val_batch_size=${12}
 
+
 # -m debugpy --listen 5678 --wait-for-client
 python $code_dir/inference_asr_batch.py \
         --config-path "conf" \
@@ -49,7 +51,8 @@ python $code_dir/inference_asr_batch.py \
         ++model_config.encoder_projector=$encoder_projector \
         ++dataset_config.dataset=speech_dataset \
         ++dataset_config.val_data_path=$test_data_path \
-        ++dataset_config.input_type=raw \
+        ++dataset_config.input_type=mel \
+        ++dataset_config.mel_size=128 \
         ++dataset_config.inference_mode=true \
         ++train_config.model_name=asr \
         ++train_config.freeze_encoder=true \
@@ -61,9 +64,10 @@ python $code_dir/inference_asr_batch.py \
         ++train_config.output_dir=$output_dir \
         ++decode_log=$decode_log \
         ++ckpt_path=$ckpt_path/model.pt \
-        ++log_config.log_file=$output_dir/test.log 
+        ++log_config.log_file=$output_dir/test.log \
+        ++train_config.use_peft=true \
         # ++peft_ckpt=$ckpt_path \
-        # ++train_config.use_peft=true \
+        #++train_config.use_peft=true \
         # ++train_config.peft_config.r=32 \
         # ++dataset_config.normalize=true \
         # ++model_config.encoder_projector=q-former \

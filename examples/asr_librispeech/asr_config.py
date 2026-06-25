@@ -54,16 +54,16 @@ class TrainConfig:
     num_workers_dataloader:int = 1
     warmup_steps:int = 1000
     total_steps:int = 100000
-    validation_interval:int = 1000
+    validation_interval:int = 2400
     lr:float = 1e-4
     weight_decay:float = 0.0
     gamma:float = 0.85
     seed:int = 42
-    use_fp16:bool = False
+    use_fp16:bool = True
     mixed_precision:bool = True
     val_batch_size:int = 1
 
-    use_peft:bool = False
+    use_peft:bool = True
     peft_config:PeftConfig = field(default_factory=PeftConfig)
     output_dir:str = "PATH/to/save/PEFT/model"
     freeze_layers:bool = False

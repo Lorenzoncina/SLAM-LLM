@@ -29,19 +29,22 @@ class WhisperWrappedEncoder:
             x = self.ln_post(x)
             return x
 
-        if model_config.whisper_decode:
+        # FIX 1: Use getattr to provide a default value (False) if 'whisper_decode' is missing.
+        if getattr(model_config, 'whisper_decode', False):
             import whisper
             whisper_model = whisper.load_model(name=model_config.encoder_path, device='cpu')
             whisper_model.encoder.extract_variable_length_features = types.MethodType(extract_variable_length_features, whisper_model.encoder)
             return whisper_model
 
-        if model_config.encoder_path_hf is not None:
+        # FIX 2: Use getattr to provide a default value (None) if 'encoder_path_hf' is missing.
+        if getattr(model_config, 'encoder_path_hf', None) is not None:
             from transformers import WhisperModel
             encoder = WhisperModel.from_pretrained(model_config.encoder_path_hf,torch_dtype=torch.bfloat16).encoder
         else:
             import whisper
             encoder = whisper.load_model(name=model_config.encoder_path, device='cpu').encoder
             encoder.extract_variable_length_features = types.MethodType(extract_variable_length_features, encoder)
+
         return encoder
 
 
