@@ -24,6 +24,15 @@ class ModelConfig:
     encoder_type: str = field(default="finetune", metadata={
         "help": "whether model is only pretrained or finetuned, used for models such as hubert"
     })
+    svr_alpha_init: float = field(default=-10.0, metadata={
+        "help": "initial gate logit for the linear-svr projector; sigmoid(init) ~= 0"
+    })
+    # decoding controls (used at inference to curb degenerate sentence-looping)
+    repetition_penalty: float = 1.0
+    no_repeat_ngram_size: int = field(default=0, metadata={
+        "help": "block repeating n-grams during generation; 0 disables (try 3)"
+    })
+    num_beams: int = 4
 
 @dataclass
 class PeftConfig:

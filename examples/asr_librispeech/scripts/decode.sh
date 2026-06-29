@@ -49,6 +49,8 @@ python $code_dir/inference_asr_batch.py \
         ++model_config.encoder_path=$speech_encoder_path \
         ++model_config.encoder_dim=$encoder_dim \
         ++model_config.encoder_projector=$encoder_projector \
+        ++model_config.no_repeat_ngram_size=3 \
+        ++model_config.repetition_penalty=1.1 \
         ++dataset_config.dataset=speech_dataset \
         ++dataset_config.val_data_path=$test_data_path \
         ++dataset_config.input_type=mel \

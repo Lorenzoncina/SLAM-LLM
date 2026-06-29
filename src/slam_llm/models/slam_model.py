@@ -449,21 +449,32 @@ class slam_model(nn.Module):
             **kwargs,
         )
 
-        model_outputs = self.llm.generate(
+        # Decoding controls: kwargs override, else model_config, else default.
+        # repetition_penalty / no_repeat_ngram_size suppress the degenerate
+        # sentence-looping seen in LLM-based ASR.
+        def _gen_opt(name, default):
+            if name in kwargs:
+                return kwargs[name]
+            return self.model_config.get(name, default)
+
+        no_repeat_ngram_size = int(_gen_opt("no_repeat_ngram_size", 0))
+        gen_kwargs = dict(
             inputs_embeds=inputs_embeds,
-            # max_length=kwargs.get("max_length", 200),
-            max_new_tokens=kwargs.get("max_new_tokens", 200),
-            num_beams=kwargs.get("num_beams", 4),
-            do_sample=kwargs.get("do_sample", False),
-            min_length=kwargs.get("min_length", 1),
-            top_p=kwargs.get("top_p", 1.0),
-            repetition_penalty=kwargs.get("repetition_penalty", 1.0),
-            length_penalty=kwargs.get("length_penalty", 1.0),
-            temperature=kwargs.get("temperature", 1.0),
+            max_new_tokens=_gen_opt("max_new_tokens", 200),
+            num_beams=_gen_opt("num_beams", 4),
+            do_sample=_gen_opt("do_sample", False),
+            min_length=_gen_opt("min_length", 1),
+            top_p=_gen_opt("top_p", 1.0),
+            repetition_penalty=_gen_opt("repetition_penalty", 1.0),
+            length_penalty=_gen_opt("length_penalty", 1.0),
+            temperature=_gen_opt("temperature", 1.0),
             attention_mask=attention_mask,
             bos_token_id=self.tokenizer.bos_token_id,
             eos_token_id=self.tokenizer.eos_token_id,
-            pad_token_id=self.tokenizer.pad_token_id
+            pad_token_id=self.tokenizer.pad_token_id,
         )
+        if no_repeat_ngram_size > 0:
+            gen_kwargs["no_repeat_ngram_size"] = no_repeat_ngram_size
+        model_outputs = self.llm.generate(**gen_kwargs)
 
         return model_outputs
