@@ -40,7 +40,7 @@ total_steps=${14}
 batch_size_training=${15}
 val_batch_size=${16}
 output_dir=${17}
-ckpt_path=/stek/lconcina/SLAM-LLM-DVC-/train_output/meusli-cv17-uk-ja-thai-fragility-based-constant-buffer-cl-linear/asr_epoch_1_step_25852/
+ckpt_path=/stek/lconcina/SLAM-LLM-DVC-/train_output/SVR_experiments/uk-svr-dense
 
 hydra_args="
 hydra.run.dir=$output_dir \
@@ -67,12 +67,14 @@ hydra.run.dir=$output_dir \
 ++train_config.batching_strategy=custom \
 ++train_config.warmup_steps=$warmup_steps \
 ++train_config.total_steps=$total_steps \
-++train_config.lr=1e-4 \
-++train_config.validation_interval=25852 \
+++train_config.lr=1e-3 \
+++train_config.validation_interval=9784 \
 ++train_config.batch_size_training=$batch_size_training \
 ++train_config.val_batch_size=$val_batch_size \
 ++train_config.num_workers_dataloader=2 \
 ++train_config.output_dir=$output_dir \
+++train_config.freeze_peft=true \
+++train_config.max_grad_norm=1.0 \
 ++metric=acc \
 ++log_config.log_file=$output_dir/train.log \
 "

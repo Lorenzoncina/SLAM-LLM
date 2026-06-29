@@ -43,6 +43,17 @@ def model_factory(train_config, model_config, **kwargs):
         ckpt_dict = torch.load(ckpt_path, map_location="cpu")
         model.load_state_dict(ckpt_dict, strict=False)
 
+    # For SVR Stage 2 (projector-only): freeze LoRA so ONLY the projector gating
+    # vectors (alpha) train. Must run after the LoRA weights are loaded above,
+    # otherwise LoRA absorbs the adaptation and the gates never open.
+    if train_config.get("freeze_peft", False):
+        n_frozen = 0
+        for name, param in model.named_parameters():
+            if "lora" in name.lower() and param.requires_grad:
+                param.requires_grad = False
+                n_frozen += 1
+        logger.info("freeze_peft=true: froze {} LoRA parameters (training gates only)".format(n_frozen))
+
     print_model_size(
         model,
         train_config,

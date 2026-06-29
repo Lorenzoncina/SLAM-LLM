@@ -121,12 +121,24 @@ def train(model, train_dataloader,eval_dataloader, tokenizer, optimizer, lr_sche
                     else:
                         wandb.log({"train_inner/train_inner_loss":loss, "train_inner/train_inner_accuracy":acc}, step=(epoch * total_length + step))
                     
+                # Skip non-finite losses (e.g. fp16 overflow) so one bad step
+                # does not poison total_loss / the saved model.
+                if not torch.isfinite(loss):
+                    logger.warning(f"non-finite loss at step {step}, skipping update")
+                    optimizer.zero_grad()
+                    pbar.set_description(f"Training Epoch: {epoch+1}/{train_config.num_epochs}, step {step}/{len(train_dataloader)} completed (loss: nan-skipped)")
+                    continue
+
                 total_loss += loss.detach().float()
                 total_acc += acc
+                max_grad_norm = train_config.get("max_grad_norm", 0.0)
                 if train_config.use_fp16:
                     # if fp16 is enabled, use gradient scaler to handle gradient update
                     scaler.scale(loss).backward()
                     if (step + 1) % gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
+                        if max_grad_norm and max_grad_norm > 0:
+                            scaler.unscale_(optimizer)
+                            torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
                         scaler.step(optimizer)
                         scaler.update()
                         if lr_scheduler is not None:
@@ -148,6 +160,8 @@ def train(model, train_dataloader,eval_dataloader, tokenizer, optimizer, lr_sche
                     # regular backpropagation when fp16 is not used
                     loss.backward()
                     if (step + 1) % gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
+                        if max_grad_norm and max_grad_norm > 0:
+                            torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
                         optimizer.step()
                         if lr_scheduler is not None:
                             lr_scheduler.step()

@@ -82,6 +82,12 @@ class TrainConfig:
         "help": "whether to freeze llm when finetuning, should be true when use peft finetuning"
     })
     freeze_encoder:bool = False
+    freeze_peft:bool = field(default=False, metadata={
+        "help": "freeze LoRA/PEFT params (used for SVR Stage 2: train only the projector gates)"
+    })
+    max_grad_norm:float = field(default=0.0, metadata={
+        "help": "clip gradient norm to this value if > 0 (recommended for SVR Stage 2, e.g. 1.0)"
+    })
 
 @dataclass
 class DataConfig:

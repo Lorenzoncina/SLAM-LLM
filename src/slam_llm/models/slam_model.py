@@ -47,6 +47,16 @@ def model_factory(train_config, model_config, **kwargs):
             ckpt_dict = torch.load(ckpt_path, map_location="cpu")
             model.load_state_dict(ckpt_dict, strict=False)
 
+    # For SVR Stage 2 (projector-only): freeze LoRA so ONLY the gating vectors
+    # (alpha) are trained. Must run after the LoRA weights are loaded above.
+    if train_config.get("freeze_peft", False):
+        n_frozen = 0
+        for name, param in model.named_parameters():
+            if "lora" in name.lower() and param.requires_grad:
+                param.requires_grad = False
+                n_frozen += 1
+        logger.info("freeze_peft=true: froze {} LoRA parameters (training gates only)".format(n_frozen))
+
     print_model_size(model, train_config, int(os.environ["RANK"]) if train_config.enable_fsdp or train_config.enable_ddp else 0)
     return model, tokenizer
 
@@ -224,6 +234,9 @@ def setup_encoder_projector(train_config, model_config, **kwargs):
     if model_config.encoder_projector == "linear":
         from slam_llm.models.projector import EncoderProjectorConcat
         encoder_projector = EncoderProjectorConcat(model_config)
+    elif model_config.encoder_projector == "linear-svr":
+        from slam_llm.models.projector import EncoderProjectorConcatSVR
+        encoder_projector = EncoderProjectorConcatSVR(model_config)
     elif model_config.encoder_projector == "cov1d-linear":
         from slam_llm.models.projector import EncoderProjectorCov1d
         encoder_projector = EncoderProjectorCov1d(model_config)
@@ -353,10 +366,10 @@ class slam_model(nn.Module):
 
             if self.model_config.encoder_projector == "q-former":
                 encoder_outs = self.encoder_projector(encoder_outs, audio_mel_post_mask)
-            if self.model_config.encoder_projector == "linear":
+            if self.model_config.encoder_projector in ("linear", "linear-svr"):
                 encoder_outs = self.encoder_projector(encoder_outs)
-            if self.model_config.encoder_projector == "cov1d-linear": 
-                encoder_outs = self.encoder_projector(encoder_outs) 
+            if self.model_config.encoder_projector == "cov1d-linear":
+                encoder_outs = self.encoder_projector(encoder_outs)
 
         if instruct_ids is not None:
             if self.encoder is not None:
@@ -364,7 +377,7 @@ class slam_model(nn.Module):
 
             if self.model_config.encoder_projector == "q-former":
                 encoder_outs = self.encoder_projector(encoder_outs, instruct_mask)
-            if self.model_config.encoder_projector == "linear":
+            if self.model_config.encoder_projector in ("linear", "linear-svr"):
                 encoder_outs = self.encoder_projector(encoder_outs)
 
         if input_ids is not None:
