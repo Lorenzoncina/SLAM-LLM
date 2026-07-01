@@ -1,6 +1,48 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from contextlib import contextmanager
+
+
+@contextmanager
+def svr_base_projector(model):
+    """Temporarily force every GatedSVDLinear in ``model`` to its base weight.
+
+    Used to produce the KD *teacher* outputs (= the base/previous model) during
+    SVR Stage-2 training: with the gates forced to 0, the projector emits exactly
+    W_base, so the model reproduces the base MEUSLI (base projector + frozen base
+    LoRA). Restores normal (gated) behaviour on exit.
+    """
+    gated = [m for m in model.modules() if isinstance(m, GatedSVDLinear)]
+    for m in gated:
+        m.teacher_mode = True
+    try:
+        yield
+    finally:
+        for m in gated:
+            m.teacher_mode = False
+
+
+def svr_kd_loss(student_logits, teacher_logits, labels, temperature=1.0):
+    """KL(teacher || student) over the supervised (label != -100) positions.
+
+    Mirrors the cross-entropy masking/shift used by HF causal LMs so the KD term
+    is computed on exactly the transcription tokens. Returns a scalar tensor
+    (0.0 if no supervised positions are present).
+    """
+    # shift to align logit[i] with label[i+1], like HF CausalLM loss
+    s = student_logits[:, :-1, :]
+    t = teacher_logits[:, :-1, :]
+    lbl = labels[:, 1:]
+    mask = lbl != -100
+    if mask.sum() == 0:
+        return student_logits.new_zeros(())
+    s = s[mask]
+    t = t[mask]
+    log_p_student = F.log_softmax(s.float() / temperature, dim=-1)
+    p_teacher = F.softmax(t.float() / temperature, dim=-1)
+    kd = F.kl_div(log_p_student, p_teacher, reduction="batchmean")
+    return kd * (temperature * temperature)
 
 
 class GatedSVDLinear(nn.Module):
@@ -34,6 +76,8 @@ class GatedSVDLinear(nn.Module):
         self.in_features = in_features
         self.out_features = out_features
         self.alpha_init = alpha_init
+        # when True, forward uses W_base (gates off) -> KD teacher / base model
+        self.teacher_mode = False
         # rank of a full (thin) SVD of an (out_features x in_features) matrix
         k = min(in_features, out_features)
         self.rank = k
@@ -79,6 +123,9 @@ class GatedSVDLinear(nn.Module):
                 self.bias.copy_(b_base.float())
 
     def effective_weight(self):
+        if self.teacher_mode:
+            # gates off -> base/previous model weight (KD teacher)
+            return self.weight_base
         gated_s = torch.sigmoid(self.alpha) * self.s
         # (out, k) * (k,) -> (out, k), then @ (k, in) -> (out, in)
         delta_w = (self.U * gated_s) @ self.Vh

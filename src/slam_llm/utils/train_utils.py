@@ -29,10 +29,31 @@ from slam_llm.utils.checkpoint_handler import (
 from slam_llm.policies import fpSixteen,bfSixteen_mixed, get_llama_wrapper
 from slam_llm.utils.memory_utils import MemoryTrace
 from slam_llm.utils.metric import compute_accuracy
+from slam_llm.models.projector import svr_base_projector, svr_kd_loss
 
 import wandb
 import logging
 logger = logging.getLogger(__name__)
+
+
+def move_batch_to_device(batch, train_config, local_rank):
+    """Move every tensor in a (possibly nested) batch dict to the right device."""
+    device = local_rank if (train_config.enable_fsdp or train_config.enable_ddp) else 'cuda:0'
+    for key in batch.keys():
+        if isinstance(batch[key], torch.Tensor):
+            batch[key] = batch[key].to(device)
+        elif isinstance(batch[key], dict):
+            for k2 in batch[key].keys():
+                if isinstance(batch[key][k2], torch.Tensor):
+                    batch[key][k2] = batch[key][k2].to(device)
+    return batch
+
+
+def _infinite_iter(dataloader):
+    """Yield batches from a dataloader forever, re-creating the iterator at the end."""
+    while True:
+        for b in dataloader:
+            yield b
 
 
 def set_tokenizer_params(tokenizer: LlamaTokenizer):
@@ -43,7 +64,7 @@ def set_tokenizer_params(tokenizer: LlamaTokenizer):
 def byte2mb(x):
     return int(x / 2**20)
 
-def train(model, train_dataloader,eval_dataloader, tokenizer, optimizer, lr_scheduler, gradient_accumulation_steps, train_config, log_config, fsdp_config=None, local_rank=None, rank=None):
+def train(model, train_dataloader,eval_dataloader, tokenizer, optimizer, lr_scheduler, gradient_accumulation_steps, train_config, log_config, fsdp_config=None, local_rank=None, rank=None, memory_dataloader=None):
     """
     Trains the model on the given dataloader
 
@@ -75,6 +96,14 @@ def train(model, train_dataloader,eval_dataloader, tokenizer, optimizer, lr_sche
         world_size = int(os.environ["WORLD_SIZE"])
     autocast = torch.cuda.amp.autocast if train_config.use_fp16 else nullcontext
     
+    # SVR Stage-2: per-step weighted memory minibatch (CE + KD against base model)
+    svr_kd = bool(train_config.get("svr_kd", False)) and memory_dataloader is not None
+    if svr_kd:
+        svr_mem_iter = _infinite_iter(memory_dataloader)
+        svr_mem_weight = float(train_config.get("svr_mem_weight", 1.0))
+        svr_kd_T = float(train_config.get("svr_kd_temperature", 1.0))
+        logger.info(f"SVR KD enabled: mem_weight={svr_mem_weight}, kd_temperature={svr_kd_T}")
+
     train_prep = []
     train_loss = []
     train_acc = []
@@ -106,81 +135,90 @@ def train(model, train_dataloader,eval_dataloader, tokenizer, optimizer, lr_sche
                         if isinstance(batch[key], dict):
                             for k2 in batch[key].keys():
                                 batch[key][k2] = batch[key][k2].to('cuda:0') if isinstance(batch[key][k2], torch.Tensor) else batch[key][k2]
+                max_grad_norm = train_config.get("max_grad_norm", 0.0)
+                is_dist = train_config.enable_fsdp or train_config.enable_ddp
+
+                # ---- new-task forward + immediate backward ----
+                # We back-prop the new-task loss BEFORE running the memory forward
+                # so the two autograd graphs are never alive at the same time: the
+                # new and memory batches differ in length and the frozen model
+                # updates an internal buffer in place between them, which would
+                # otherwise corrupt a single combined backward.
                 with autocast():
                     outputs, *rest = model(**batch)
                 acc = rest[0] if rest else -1
-                loss = outputs.loss
+                loss_new = outputs.loss
 
-                loss = loss / gradient_accumulation_steps
-                acc = acc / gradient_accumulation_steps
-
-                if log_config.use_wandb and step % log_config.log_interval == 0:
-                    if train_config.enable_fsdp or train_config.enable_ddp:
-                        if rank==0:
-                            wandb.log({"train_inner/train_inner_loss":loss, "train_inner/train_inner_accuracy":acc}, step=(epoch * total_length + step))
-                    else:
-                        wandb.log({"train_inner/train_inner_loss":loss, "train_inner/train_inner_accuracy":acc}, step=(epoch * total_length + step))
-                    
-                # Skip non-finite losses (e.g. fp16 overflow) so one bad step
-                # does not poison total_loss / the saved model.
-                if not torch.isfinite(loss):
-                    logger.warning(f"non-finite loss at step {step}, skipping update")
+                if not torch.isfinite(loss_new):
+                    logger.warning(f"non-finite new-task loss at step {step}, skipping update")
                     optimizer.zero_grad()
                     pbar.set_description(f"Training Epoch: {epoch+1}/{train_config.num_epochs}, step {step}/{len(train_dataloader)} completed (loss: nan-skipped)")
                     continue
 
-                total_loss += loss.detach().float()
-                total_acc += acc
-                max_grad_norm = train_config.get("max_grad_norm", 0.0)
-                if train_config.use_fp16:
-                    # if fp16 is enabled, use gradient scaler to handle gradient update
-                    scaler.scale(loss).backward()
-                    if (step + 1) % gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
-                        if max_grad_norm and max_grad_norm > 0:
+                step_loss = loss_new.detach().float()
+                scaled_new = loss_new / gradient_accumulation_steps
+                # if a memory backward will follow, skip DDP grad sync on this one
+                first_bwd_ctx = model.no_sync() if (svr_kd and is_dist and hasattr(model, "no_sync")) else nullcontext()
+                with first_bwd_ctx:
+                    if train_config.use_fp16:
+                        scaler.scale(scaled_new).backward()
+                    else:
+                        scaled_new.backward()
+
+                # ---- memory forward (CE + KD vs base model) + backward ----
+                if svr_kd:
+                    mem_batch = move_batch_to_device(next(svr_mem_iter), train_config, local_rank)
+                    # eval mode -> LoRA dropout off; teacher (gates off) deterministic.
+                    model.eval()
+                    with torch.no_grad(), svr_base_projector(model), autocast():
+                        teacher_out, *_ = model(**mem_batch)
+                    teacher_logits = teacher_out.logits.detach()
+                    with autocast():
+                        mem_out, *_ = model(**mem_batch)
+                    model.train()
+                    loss_mem = svr_mem_weight * (
+                        mem_out.loss + svr_kd_loss(mem_out.logits, teacher_logits,
+                                                   mem_batch["labels"], svr_kd_T))
+                    if torch.isfinite(loss_mem):
+                        step_loss = step_loss + loss_mem.detach().float()
+                        scaled_mem = loss_mem / gradient_accumulation_steps
+                        if train_config.use_fp16:
+                            scaler.scale(scaled_mem).backward()
+                        else:
+                            scaled_mem.backward()
+                    else:
+                        logger.warning(f"non-finite memory loss at step {step}, skipping memory term")
+
+                total_loss += step_loss / gradient_accumulation_steps
+                total_acc += acc / gradient_accumulation_steps
+                if log_config.use_wandb and step % log_config.log_interval == 0 and ((not is_dist) or rank == 0):
+                    wandb.log({"train_inner/train_inner_loss": step_loss, "train_inner/train_inner_accuracy": acc}, step=(epoch * total_length + step))
+
+                # ---- optimizer step (every grad-accum boundary) ----
+                if (step + 1) % gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
+                    if max_grad_norm and max_grad_norm > 0:
+                        if train_config.use_fp16:
                             scaler.unscale_(optimizer)
-                            torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+                    if train_config.use_fp16:
                         scaler.step(optimizer)
                         scaler.update()
-                        if lr_scheduler is not None:
-                            lr_scheduler.step()
-                            current_lr = lr_scheduler.get_last_lr()[0]
-                        else:
-                            current_lr = optimizer.param_groups[0]["lr"]
-                        if current_lr == 0:
-                            break
-                        if log_config.use_wandb and step % log_config.log_interval == 0:
-                            if train_config.enable_fsdp or train_config.enable_ddp:
-                                if rank==0:
-                                    wandb.log({"train_inner/lr":current_lr}, step=(epoch * total_length + step))
-                            else:
-                                wandb.log({"train_inner/lr":current_lr}, step=(epoch * total_length + step))
-                        optimizer.zero_grad()
-                        pbar.update(1)
-                else:
-                    # regular backpropagation when fp16 is not used
-                    loss.backward()
-                    if (step + 1) % gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
-                        if max_grad_norm and max_grad_norm > 0:
-                            torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+                    else:
                         optimizer.step()
-                        if lr_scheduler is not None:
-                            lr_scheduler.step()
-                            current_lr = lr_scheduler.get_last_lr()[0]
-                        else:
-                            current_lr = optimizer.param_groups[0]["lr"]
-                        if current_lr == 0:
-                            break
-                        if log_config.use_wandb and step % log_config.log_interval == 0:
-                            if train_config.enable_fsdp or train_config.enable_ddp:
-                                if rank==0:
-                                    wandb.log({"train_inner/lr":current_lr}, step=(epoch * total_length + step))
-                            else:
-                                wandb.log({"train_inner/lr":current_lr}, step=(epoch * total_length + step))
-                        optimizer.zero_grad()
-                        pbar.update(1)
+                    if lr_scheduler is not None:
+                        lr_scheduler.step()
+                        current_lr = lr_scheduler.get_last_lr()[0]
+                    else:
+                        current_lr = optimizer.param_groups[0]["lr"]
+                    optimizer.zero_grad()
+                    pbar.update(1)
+                    if log_config.use_wandb and step % log_config.log_interval == 0 and ((not is_dist) or rank == 0):
+                        wandb.log({"train_inner/lr": current_lr}, step=(epoch * total_length + step))
+                    if current_lr == 0:
+                        break
 
-                pbar.set_description(f"Training Epoch: {epoch+1}/{train_config.num_epochs}, step {step}/{len(train_dataloader)} completed (loss: {loss.detach().float()}, acc: {acc})")
-                
+                pbar.set_description(f"Training Epoch: {epoch+1}/{train_config.num_epochs}, step {step}/{len(train_dataloader)} completed (loss: {step_loss}, acc: {acc})")
+
                 if (epoch * total_length + step + 1) % train_config.validation_interval == 0 and train_config.run_validation:
                     eval_ppl, eval_epoch_loss, *rest = evaluation(model, train_config, eval_dataloader, local_rank, tokenizer)
                     eval_epoch_acc = rest[0] if rest else -1

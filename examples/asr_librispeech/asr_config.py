@@ -97,6 +97,15 @@ class TrainConfig:
     max_grad_norm:float = field(default=0.0, metadata={
         "help": "clip gradient norm to this value if > 0 (recommended for SVR Stage 2, e.g. 1.0)"
     })
+    svr_kd:bool = field(default=False, metadata={
+        "help": "SVR Stage-2 loss: per-step weighted memory minibatch (CE+KD vs base model)"
+    })
+    svr_mem_weight:float = field(default=1.0, metadata={
+        "help": "weight on the memory (CE+KD) term, i.e. (t-1)/2 in the paper"
+    })
+    svr_kd_temperature:float = field(default=1.0, metadata={
+        "help": "softmax temperature for the KD term"
+    })
 
 @dataclass
 class DataConfig:
@@ -104,6 +113,7 @@ class DataConfig:
     file: str = "src/slam_llm/datasets/speech_dataset.py:get_speech_dataset"
     train_data_path: Optional[str] = None
     val_data_path: Optional[str] = None
+    memory_data_path: Optional[str] = None  # SVR Stage-2 rehearsal buffer (separate jsonl)
     train_split: str = "train"
     test_split:str = "validation"
     prompt: Optional[str] = None

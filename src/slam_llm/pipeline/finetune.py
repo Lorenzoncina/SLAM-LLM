@@ -233,6 +233,23 @@ def main(kwargs: DictConfig):
             **val_dl_kwargs,
         )
 
+    # SVR Stage-2: a separate rehearsal-buffer loader, sampled every step (CE+KD)
+    memory_dataloader = None
+    if train_config.get("svr_kd", False) and dataset_config.get("memory_data_path", None):
+        import copy
+        mem_dataset_config = copy.deepcopy(dataset_config)
+        mem_dataset_config.train_data_path = dataset_config.memory_data_path
+        dataset_mem = get_preprocessed_dataset(tokenizer, mem_dataset_config, split="train")
+        if not (train_config.enable_fsdp or train_config.enable_ddp) or rank == 0:
+            logger.info(f"--> SVR memory (rehearsal) set length = {len(dataset_mem)}")
+        mem_dl_kwargs = get_dataloader_kwargs(train_config, dataset_mem, tokenizer, "train")
+        memory_dataloader = torch.utils.data.DataLoader(
+            dataset_mem,
+            num_workers=train_config.num_workers_dataloader,
+            pin_memory=True,
+            **mem_dl_kwargs,
+        )
+
     # Initialize the optimizer and learning rate scheduler
     if fsdp_config.pure_bf16 and fsdp_config.optimizer == "anyprecision":
         optimizer = AnyPrecisionAdamW(
@@ -273,6 +290,7 @@ def main(kwargs: DictConfig):
         fsdp_config if train_config.enable_fsdp else None,
         local_rank if train_config.enable_fsdp or train_config.enable_ddp else None,
         rank if train_config.enable_fsdp or train_config.enable_ddp else None,
+        memory_dataloader=memory_dataloader,
     )
     if not (train_config.enable_fsdp or train_config.enable_ddp) or rank==0:
         [logger.info(f'Key: {k}, Value: {v}') for k, v in results.items()]

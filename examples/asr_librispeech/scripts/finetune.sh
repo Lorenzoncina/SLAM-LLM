@@ -40,7 +40,10 @@ total_steps=${14}
 batch_size_training=${15}
 val_batch_size=${16}
 output_dir=${17}
-ckpt_path=/stek/lconcina/SLAM-LLM-DVC-/train_output/SVR_experiments/uk-svr-dense
+ckpt_path=/stek/lconcina/SLAM-LLM-DVC-/train_output/SVR_experiments/new_lang/1_sample/ukranian/uk_exp_3/uk-svr-init
+# SVR Stage-2 rehearsal buffer (REHEARSAL-ONLY jsonl, e.g. 1 or 500 samples/lang,
+# NO Ukrainian). train_data_path (from params.yaml) must be the NEW task only.
+memory_data_path=/stek/lconcina/SLAM-LLM-DVC-/data/cv_17_ukranian_continuallearning/1_samples_data_reply/data_reply_1_train_random.jsonl
 
 hydra_args="
 hydra.run.dir=$output_dir \
@@ -68,13 +71,17 @@ hydra.run.dir=$output_dir \
 ++train_config.warmup_steps=$warmup_steps \
 ++train_config.total_steps=$total_steps \
 ++train_config.lr=1e-3 \
-++train_config.validation_interval=9784 \
+++train_config.validation_interval=6284 \
 ++train_config.batch_size_training=$batch_size_training \
 ++train_config.val_batch_size=$val_batch_size \
 ++train_config.num_workers_dataloader=2 \
 ++train_config.output_dir=$output_dir \
 ++train_config.freeze_peft=true \
 ++train_config.max_grad_norm=1.0 \
+++train_config.svr_kd=true \
+++train_config.svr_mem_weight=1.0 \
+++train_config.svr_kd_temperature=1.0 \
+++dataset_config.memory_data_path=$memory_data_path \
 ++metric=acc \
 ++log_config.log_file=$output_dir/train.log \
 "
