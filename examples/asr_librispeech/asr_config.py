@@ -106,6 +106,9 @@ class TrainConfig:
     svr_kd_temperature:float = field(default=1.0, metadata={
         "help": "softmax temperature for the KD term"
     })
+    svr_lora_lr:float = field(default=1e-4, metadata={
+        "help": "LR for trainable LoRA during SVR Stage 2 (gates use train_config.lr)"
+    })
 
 @dataclass
 class DataConfig:

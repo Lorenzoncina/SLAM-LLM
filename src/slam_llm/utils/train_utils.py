@@ -4,7 +4,7 @@
 import os
 import time
 import yaml
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from pkg_resources import packaging
 
@@ -56,6 +56,32 @@ def _infinite_iter(dataloader):
             yield b
 
 
+@contextmanager
+def _swap_params_to(model, saved):
+    """Temporarily overwrite the named parameters in ``saved`` with their saved
+    values, restoring the live values on exit.
+
+    Used to give the SVR KD teacher the *base* LoRA while the live LoRA trains:
+    teacher = base projector (gates off) + base LoRA. No-op if ``saved`` is empty.
+    """
+    if not saved:
+        yield
+        return
+    live = {}
+    with torch.no_grad():
+        for name, param in model.named_parameters():
+            if name in saved:
+                live[name] = param.detach().clone()
+                param.data.copy_(saved[name])
+    try:
+        yield
+    finally:
+        with torch.no_grad():
+            for name, param in model.named_parameters():
+                if name in live:
+                    param.data.copy_(live[name])
+
+
 def set_tokenizer_params(tokenizer: LlamaTokenizer):
     tokenizer.pad_token_id = 0
     tokenizer.padding_side = "left"
@@ -98,11 +124,21 @@ def train(model, train_dataloader,eval_dataloader, tokenizer, optimizer, lr_sche
     
     # SVR Stage-2: per-step weighted memory minibatch (CE + KD against base model)
     svr_kd = bool(train_config.get("svr_kd", False)) and memory_dataloader is not None
+    svr_base_lora = {}
     if svr_kd:
         svr_mem_iter = _infinite_iter(memory_dataloader)
         svr_mem_weight = float(train_config.get("svr_mem_weight", 1.0))
         svr_kd_T = float(train_config.get("svr_kd_temperature", 1.0))
         logger.info(f"SVR KD enabled: mem_weight={svr_mem_weight}, kd_temperature={svr_kd_T}")
+        # If LoRA is trainable (freeze_peft=false), snapshot its starting values
+        # so the KD teacher can use them. At this point the LoRA equals the BASE
+        # LoRA (the svr-init checkpoint is built with --lora-source base), so
+        # teacher = base projector (gates off) + base LoRA = the base model.
+        for name, param in model.named_parameters():
+            if "lora" in name.lower() and param.requires_grad:
+                svr_base_lora[name] = param.detach().clone()
+        if svr_base_lora:
+            logger.info(f"SVR KD: LoRA is trainable; snapshotted {len(svr_base_lora)} base LoRA tensors for the teacher")
 
     train_prep = []
     train_loss = []
@@ -168,9 +204,10 @@ def train(model, train_dataloader,eval_dataloader, tokenizer, optimizer, lr_sche
                 # ---- memory forward (CE + KD vs base model) + backward ----
                 if svr_kd:
                     mem_batch = move_batch_to_device(next(svr_mem_iter), train_config, local_rank)
-                    # eval mode -> LoRA dropout off; teacher (gates off) deterministic.
+                    # eval mode -> LoRA dropout off; teacher (gates off + base
+                    # LoRA swapped in) is exactly the frozen base model.
                     model.eval()
-                    with torch.no_grad(), svr_base_projector(model), autocast():
+                    with torch.no_grad(), svr_base_projector(model), _swap_params_to(model, svr_base_lora), autocast():
                         teacher_out, *_ = model(**mem_batch)
                     teacher_logits = teacher_out.logits.detach()
                     with autocast():

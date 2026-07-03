@@ -261,11 +261,32 @@ def main(kwargs: DictConfig):
             weight_decay=train_config.weight_decay,
         )
     else:
-        optimizer = optim.AdamW(
-            model.parameters(),
-            lr=train_config.lr,
-            weight_decay=train_config.weight_decay,
-        )
+        # SVR Stage-2 with trainable LoRA: the projector gates (alpha) need a
+        # much higher LR (~1e-3) than the LoRA (~1e-4, as in Stage 1), so put
+        # them in separate parameter groups. Falls back to a single group when
+        # SVR-KD is off or nothing besides alpha is trainable.
+        svr_alpha_params = [p for n, p in model.named_parameters()
+                            if p.requires_grad and n.endswith(".alpha")]
+        svr_other_params = [p for n, p in model.named_parameters()
+                            if p.requires_grad and not n.endswith(".alpha")]
+        if train_config.get("svr_kd", False) and svr_alpha_params and svr_other_params:
+            svr_lora_lr = float(train_config.get("svr_lora_lr", 1e-4))
+            logger.info(f"SVR optimizer groups: {sum(p.numel() for p in svr_alpha_params)} alpha params @ lr={train_config.lr}, "
+                        f"{sum(p.numel() for p in svr_other_params)} other (LoRA) params @ lr={svr_lora_lr}")
+            optimizer = optim.AdamW(
+                [
+                    {"params": svr_alpha_params, "lr": train_config.lr},
+                    {"params": svr_other_params, "lr": svr_lora_lr},
+                ],
+                lr=train_config.lr,
+                weight_decay=train_config.weight_decay,
+            )
+        else:
+            optimizer = optim.AdamW(
+                model.parameters(),
+                lr=train_config.lr,
+                weight_decay=train_config.weight_decay,
+            )
     # scheduler = StepLR(optimizer, step_size=1, gamma=train_config.gamma)
     scheduler = torch.optim.lr_scheduler.LambdaLR(
         optimizer, 
