@@ -109,6 +109,11 @@ class TrainConfig:
     svr_lora_lr:float = field(default=1e-4, metadata={
         "help": "LR for trainable LoRA during SVR Stage 2 (gates use train_config.lr)"
     })
+    svr_full_ft_teacher:bool = field(default=False, metadata={
+        "help": "Replay+Eq.2 ablation: the projector is a full (non-gated) linear "
+                "layer, so the base projector cannot be recovered by zeroing gates; "
+                "snapshot it too so the KD teacher = full base model (base proj + base LoRA)"
+    })
 
 @dataclass
 class DataConfig:

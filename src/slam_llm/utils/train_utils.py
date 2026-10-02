@@ -139,6 +139,21 @@ def train(model, train_dataloader,eval_dataloader, tokenizer, optimizer, lr_sche
                 svr_base_lora[name] = param.detach().clone()
         if svr_base_lora:
             logger.info(f"SVR KD: LoRA is trainable; snapshotted {len(svr_base_lora)} base LoRA tensors for the teacher")
+        # Replay+Eq.2 ablation (svr_full_ft_teacher=true): the projector is a
+        # plain (non-gated) linear layer trained in full, so the base projector
+        # CANNOT be recovered by zeroing gates -- svr_base_projector() is a no-op
+        # here. Snapshot every remaining trainable tensor (i.e. the projector
+        # weights) so the teacher = base projector + base LoRA = the full base
+        # model theta_{t-1}. Encoder and LLM are frozen, so this captures exactly
+        # the projector.
+        if bool(train_config.get("svr_full_ft_teacher", False)):
+            n_extra = 0
+            for name, param in model.named_parameters():
+                if param.requires_grad and name not in svr_base_lora:
+                    svr_base_lora[name] = param.detach().clone()
+                    n_extra += 1
+            logger.info(f"SVR KD full-FT teacher: snapshotted {n_extra} extra base "
+                        f"(projector) tensors; teacher = full base model")
 
     train_prep = []
     train_loss = []
